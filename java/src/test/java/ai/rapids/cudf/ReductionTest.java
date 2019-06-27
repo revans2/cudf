@@ -24,6 +24,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ReductionTest {
 
@@ -160,6 +161,7 @@ class ReductionTest {
   @ParameterizedTest
   @MethodSource("createBooleanParams")
   void testBoolean(ReductionOp op, Boolean[] values, Scalar expected) {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector v = ColumnVector.fromBoxedBooleans(values)) {
       Scalar result = v.reduction(op);
       assertEquals(expected, result);
@@ -169,6 +171,7 @@ class ReductionTest {
   @ParameterizedTest
   @MethodSource("createByteParams")
   void testByte(ReductionOp op, Byte[] values, Scalar expected) {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector v = ColumnVector.fromBoxedBytes(values)) {
       Scalar result = v.reduction(op);
       assertEquals(expected, result);
@@ -178,6 +181,7 @@ class ReductionTest {
   @ParameterizedTest
   @MethodSource("createShortParams")
   void testShort(ReductionOp op, Short[] values, Scalar expected) {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector v = ColumnVector.fromBoxedShorts(values)) {
       Scalar result = v.reduction(op);
       assertEquals(expected, result);
@@ -187,6 +191,7 @@ class ReductionTest {
   @ParameterizedTest
   @MethodSource("createIntParams")
   void testInt(ReductionOp op, Integer[] values, Scalar expected) {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector v = ColumnVector.fromBoxedInts(values)) {
       Scalar result = v.reduction(op);
       assertEquals(expected, result);
@@ -196,6 +201,7 @@ class ReductionTest {
   @ParameterizedTest
   @MethodSource("createLongParams")
   void testLong(ReductionOp op, Long[] values, Scalar expected) {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector v = ColumnVector.fromBoxedLongs(values)) {
       Scalar result = v.reduction(op);
       assertEquals(expected, result);
@@ -205,6 +211,7 @@ class ReductionTest {
   @ParameterizedTest
   @MethodSource("createFloatParams")
   void testFloat(ReductionOp op, Float[] values, Scalar expected) {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector v = ColumnVector.fromBoxedFloats(values)) {
       Scalar result = v.reduction(op);
       assertEquals(expected, result);
@@ -214,6 +221,7 @@ class ReductionTest {
   @ParameterizedTest
   @MethodSource("createDoubleParams")
   void testByte(ReductionOp op, Double[] values, Scalar expected) {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector v = ColumnVector.fromBoxedDoubles(values)) {
       Scalar result = v.reduction(op);
       assertEquals(expected, result);
@@ -223,6 +231,7 @@ class ReductionTest {
   @ParameterizedTest
   @MethodSource("createDate32Params")
   void testDate32(ReductionOp op, Integer[] values, Scalar expected) {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector v = ColumnVector.datesFromBoxedInts(values)) {
       Scalar result = v.reduction(op);
       assertEquals(expected, result);
@@ -232,6 +241,7 @@ class ReductionTest {
   @ParameterizedTest
   @MethodSource("createDate64Params")
   void testDate64(ReductionOp op, Long[] values, Scalar expected) {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector v = ColumnVector.datesFromBoxedLongs(values)) {
       Scalar result = v.reduction(op);
       assertEquals(expected, result);
@@ -241,6 +251,7 @@ class ReductionTest {
   @ParameterizedTest
   @MethodSource("createTimestampParams")
   void testTimestamp(ReductionOp op, Long[] values, TimeUnit timeUnit, Scalar expected) {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector v = ColumnVector.timestampsFromBoxedLongs(timeUnit, values)) {
       Scalar result = v.reduction(op);
       assertEquals(expected, result);

@@ -21,9 +21,6 @@ package ai.rapids.cudf;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
-import java.sql.Time;
-import java.util.Random;
-
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.spy;
@@ -32,6 +29,7 @@ public class FloatColumnVectorTest {
 
   @Test
   public void testCreateColumnVectorBuilder() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector floatColumnVector = ColumnVector.build(DType.FLOAT32, 3,
         (b) -> b.append(1.0f))) {
       assertFalse(floatColumnVector.hasNulls());
@@ -40,6 +38,7 @@ public class FloatColumnVectorTest {
 
   @Test
   public void testArrayAllocation() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector floatColumnVector = ColumnVector.fromFloats(2.1f, 3.02f, 5.003f)) {
       assertFalse(floatColumnVector.hasNulls());
       assertEquals(floatColumnVector.getFloat(0), 2.1, 0.01);
@@ -50,6 +49,7 @@ public class FloatColumnVectorTest {
 
   @Test
   public void testUpperIndexOutOfBoundsException() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector floatColumnVector = ColumnVector.fromFloats(2.1f, 3.02f, 5.003f)) {
       assertThrows(AssertionError.class, () -> floatColumnVector.getFloat(3));
       assertFalse(floatColumnVector.hasNulls());
@@ -58,6 +58,7 @@ public class FloatColumnVectorTest {
 
   @Test
   public void testLowerIndexOutOfBoundsException() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector floatColumnVector = ColumnVector.fromFloats(2.1f, 3.02f, 5.003f)) {
       assertFalse(floatColumnVector.hasNulls());
       assertThrows(AssertionError.class, () -> floatColumnVector.getFloat(-1));
@@ -66,6 +67,7 @@ public class FloatColumnVectorTest {
 
   @Test
   public void testAddingNullValues() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector cv = ColumnVector.fromBoxedFloats(
         new Float[]{2f, 3f, 4f, 5f, 6f, 7f, null, null})) {
       assertTrue(cv.hasNulls());
@@ -88,6 +90,7 @@ public class FloatColumnVectorTest {
 
   @Test
   public void testCastToFloat() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (ColumnVector doubleColumnVector = ColumnVector.fromDoubles(new double[]{4.3, 3.8, 8});
          ColumnVector shortColumnVector = ColumnVector.fromShorts(new short[]{100});
          ColumnVector floatColumnVector1 = doubleColumnVector.asFloats();
@@ -98,67 +101,6 @@ public class FloatColumnVectorTest {
       assertEquals(3.8, floatColumnVector1.getFloat(1), 0.001);
       assertEquals(8, floatColumnVector1.getFloat(2));
       assertEquals(100, floatColumnVector2.getFloat(0));
-    }
-  }
-
-  @Test
-  void testAppendVector() {
-    Random random = new Random(192312989128L);
-    for (int dstSize = 1; dstSize <= 100; dstSize++) {
-      for (int dstPrefilledSize = 0; dstPrefilledSize < dstSize; dstPrefilledSize++) {
-        final int srcSize = dstSize - dstPrefilledSize;
-        for (int sizeOfDataNotToAdd = 0; sizeOfDataNotToAdd <= dstPrefilledSize; sizeOfDataNotToAdd++) {
-          try (ColumnVector.Builder dst = ColumnVector.builder(DType.FLOAT32, dstSize);
-               ColumnVector src = ColumnVector.buildOnHost(DType.FLOAT32, srcSize, (b) -> {
-                 for (int i = 0; i < srcSize; i++) {
-                   if (random.nextBoolean()) {
-                     b.appendNull();
-                   } else {
-                     b.append(random.nextFloat());
-                   }
-                 }
-               });
-               ColumnVector.Builder gtBuilder = ColumnVector.builder(DType.FLOAT32,
-                   dstPrefilledSize)) {
-            assertEquals(dstSize, srcSize + dstPrefilledSize);
-            //add the first half of the prefilled list
-            for (int i = 0; i < dstPrefilledSize - sizeOfDataNotToAdd; i++) {
-              if (random.nextBoolean()) {
-                dst.appendNull();
-                gtBuilder.appendNull();
-              } else {
-                float a = random.nextFloat();
-                dst.append(a);
-                gtBuilder.append(a);
-              }
-            }
-            // append the src vector
-            dst.append(src);
-            try (ColumnVector dstVector = dst.buildOnHost();
-                 ColumnVector gt = gtBuilder.buildOnHost()) {
-              for (int i = 0; i < dstPrefilledSize - sizeOfDataNotToAdd; i++) {
-                assertEquals(gt.isNull(i), dstVector.isNull(i));
-                if (!gt.isNull(i)) {
-                  assertEquals(gt.getFloat(i), dstVector.getFloat(i));
-                }
-              }
-              for (int i = dstPrefilledSize - sizeOfDataNotToAdd, j = 0; i < dstSize - sizeOfDataNotToAdd && j < srcSize; i++, j++) {
-                assertEquals(src.isNull(j), dstVector.isNull(i));
-                if (!src.isNull(j)) {
-                  assertEquals(src.getFloat(j), dstVector.getFloat(i));
-                }
-              }
-              if (dstVector.hasValidityVector()) {
-                long maxIndex =
-                    BitVectorHelper.getValidityAllocationSizeInBytes(dstVector.getRowCount()) * 8;
-                for (long i = dstSize - sizeOfDataNotToAdd; i < maxIndex; i++) {
-                  assertFalse(dstVector.isNullExtendedRange(i));
-                }
-              }
-            }
-          }
-        }
-      }
     }
   }
 }

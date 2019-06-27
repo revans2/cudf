@@ -515,6 +515,7 @@ public class TableTest {
 
   @Test
   void testLeftJoinWithNulls() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table leftTable = new Table.TestBuilder()
         .column(2, 3, 9, 0, 1, 7, 4, 6, 5, 8)
         .column(102, 103, 19, 100, 101, 4, 104, 1, 3, 1)
@@ -536,6 +537,7 @@ public class TableTest {
 
   @Test
   void testLeftJoin() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table leftTable = new Table.TestBuilder()
         .column(360, 326, 254, 306, 109, 361, 251, 335, 301, 317)
         .column(323, 172, 11, 243, 57, 143, 305, 95, 147, 58)
@@ -557,6 +559,7 @@ public class TableTest {
 
   @Test
   void testInnerJoinWithNonCommonKeys() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table leftTable = new Table.TestBuilder()
         .column(2, 3, 9, 0, 1, 7, 4, 6, 5, 8)
         .column(102, 103, 19, 100, 101, 4, 104, 1, 3, 1)
@@ -578,6 +581,7 @@ public class TableTest {
 
   @Test
   void testInnerJoinWithOnlyCommonKeys() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table leftTable = new Table.TestBuilder()
         .column(360, 326, 254, 306, 109, 361, 251, 335, 301, 317)
         .column(323, 172, 11, 243, 57, 143, 305, 95, 147, 58)
@@ -599,6 +603,7 @@ public class TableTest {
 
   @Test
   void testConcatNoNulls() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table t1 = new Table.TestBuilder()
         .column(1, 2, 3)
         .column(11.0, 12.0, 13.0).build();
@@ -618,6 +623,7 @@ public class TableTest {
 
   @Test
   void testConcatWithNulls() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table t1 = new Table.TestBuilder()
         .column(1, null, 3)
         .column(11.0, 12.0, 13.0).build();
@@ -637,6 +643,7 @@ public class TableTest {
 
   @Test
   void testMurmur3BasedPartition() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     final int count = 1024 * 1024;
     try (ColumnVector aIn = ColumnVector.build(DType.INT64, count, Range.appendLongs(count));
          ColumnVector bIn = ColumnVector.build(DType.INT32, count, (b) -> {
@@ -709,6 +716,7 @@ public class TableTest {
 
   @Test
   void testGroupByCountMulti() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table t1 = new Table.TestBuilder().column(   1,    1,    1,    1,    1,    1)
                                            .column(   1,    3,    3,    5,    5,    0)
                                            .column(12.0, 14.0, 13.0, 17.0, 17.0, 17.0)
@@ -776,6 +784,7 @@ public class TableTest {
 
   @Test
   void testGroupByCount() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table t1 = new Table.TestBuilder().column(   1,    1,    1,    1,    1,    1)
                                            .column(   1,    3,    3,    5,    5,    0)
                                            .column(12.0, 14.0, 13.0, 17.0, 17.0, 17.0)
@@ -808,6 +817,7 @@ public class TableTest {
 
   @Test
   void testGroupByMax() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table t1 = new Table.TestBuilder().column(   1,    1,    1,    1,    1,    1)
                                            .column(   1,    3,    3,    5,    5,    0)
                                            .column(12.0, 14.0, 13.0, 17.0, 17.0, 17.0)
@@ -841,6 +851,7 @@ public class TableTest {
 
   @Test
   void testGroupByMin() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table t1 = new Table.TestBuilder().column(   1,    1,    1,    1,    1,    1)
                                            .column(   1,    3,    3,    5,    5,    0)
                                            .column(  12,   14,   13,   17,   17,   17)
@@ -877,6 +888,7 @@ public class TableTest {
 
   @Test
   void testGroupBySum() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table t1 = new Table.TestBuilder().column(   1,    1,    1,    1,    1,    1)
                                            .column(   1,    3,    3,    5,    5,    0)
                                            .column(12.0, 14.0, 13.0, 17.0, 17.0, 17.0)
@@ -911,6 +923,7 @@ public class TableTest {
 
   @Test
   void testGroupByAvg() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table t1 = new Table.TestBuilder().column( 1,  1,  1,  1,  1,  1)
                                            .column( 1,  3,  3,  5,  5,  0)
                                            .column(12, 14, 13,  1, 17, 17)
@@ -945,6 +958,7 @@ public class TableTest {
 
   @Test
   void testMultiAgg() {
+    assumeTrue(Cuda.isEnvCompatibleForTesting());
     try (Table t1 = new Table.TestBuilder().column(  1,   1,   1,   1,   1,    1)
                                            .column(  2,   2,   2,   3,   3,    3)
                                            .column(5.0, 2.3, 3.4, 2.3, 1.3, 12.2)
