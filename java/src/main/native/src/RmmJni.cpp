@@ -26,14 +26,14 @@
 #include <rmm/mr/device/cnmem_memory_resource.hpp>
 #include <rmm/mr/device/cuda_memory_resource.hpp>
 #include <rmm/mr/device/default_memory_resource.hpp>
-#include <rmm/mr/device/logging_resource_adaptor.hpp>
+//#include <rmm/mr/device/logging_resource_adaptor.hpp>
 #include <rmm/mr/device/managed_memory_resource.hpp>
 #include <unordered_map>
 
 #include "jni_utils.hpp"
 
 using rmm::mr::device_memory_resource;
-using rmm::mr::logging_resource_adaptor;
+//using rmm::mr::logging_resource_adaptor;
 
 namespace {
 
@@ -345,7 +345,7 @@ void set_java_device_memory_resource(JNIEnv *env, jobject handler_obj, jlongArra
 }
 
 // Need to keep both separate so we can shut them down appropriately
-std::unique_ptr<logging_resource_adaptor<base_tracking_resource_adaptor>> Logging_memory_resource{};
+//std::unique_ptr<logging_resource_adaptor<base_tracking_resource_adaptor>> Logging_memory_resource{};
 std::unique_ptr<device_memory_resource> Initialized_resource{};
 } // anonymous namespace
 
@@ -391,6 +391,7 @@ JNIEXPORT void JNICALL Java_ai_rapids_cudf_Rmm_initializeInternal(JNIEnv *env, j
     auto resource = Tracking_memory_resource.get();
     rmm::mr::set_default_resource(resource);
 
+    /*
     std::unique_ptr<logging_resource_adaptor<base_tracking_resource_adaptor>> log_result;
     switch (log_to) {
       case 1: // File
@@ -422,7 +423,7 @@ JNIEXPORT void JNICALL Java_ai_rapids_cudf_Rmm_initializeInternal(JNIEnv *env, j
         JNI_THROW_NEW(env, RMM_EXCEPTION_CLASS,
                       "Concurrent modification detected while installing memory resource", );
       }
-    }
+    }*/
 
     // Now that RMM has successfully initialized, setup all threads calling
     // cudf to use the same device RMM is using.
@@ -441,7 +442,7 @@ JNIEXPORT void JNICALL Java_ai_rapids_cudf_Rmm_shutdownInternal(JNIEnv *env, jcl
     // RMM during this time anyways.
     Initialized_resource.reset(new rmm::mr::cuda_memory_resource());
     rmm::mr::set_default_resource(Initialized_resource.get());
-    Logging_memory_resource.reset(nullptr);
+    //Logging_memory_resource.reset(nullptr);
     Tracking_memory_resource.reset(nullptr);
     cudf::jni::set_cudf_device(cudaInvalidDeviceId);
   }
