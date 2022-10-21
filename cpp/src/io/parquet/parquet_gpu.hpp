@@ -24,6 +24,7 @@
 #include "io/utilities/hostdevice_vector.hpp"
 
 #include <cudf/column/column_device_view.cuh>
+#include <cudf/io/datasource.hpp>
 #include <cudf/lists/lists_column_device_view.cuh>
 #include <cudf/table/table_device_view.cuh>
 #include <cudf/types.hpp>
@@ -108,7 +109,7 @@ struct PageNestingInfo {
   int32_t max_rep_level;
 
   // set during preprocessing
-  int32_t size;              // this page/nesting-level's size contribution to the output column
+  int32_t size;  // this page/nesting-level's row count contribution to the output column
   int32_t page_start_value;  // absolute output start index in output column data
 
   // set during data decoding
@@ -144,6 +145,7 @@ struct PageInfo {
   Encoding encoding;       // Encoding for data or dictionary page
   Encoding definition_level_encoding;  // Encoding used for definition levels (data page)
   Encoding repetition_level_encoding;  // Encoding used for repetition levels (data page)
+  cudf::type_id type;                  // type of this page.
 
   // for nested types, we run a preprocess step in order to determine output
   // column sizes. Because of this, we can jump directly to the position in the
@@ -157,6 +159,7 @@ struct PageInfo {
   int skipped_values;
   // # of values skipped in the actual data stream.
   int skipped_leaf_values;
+  int32_t str_bytes;  // for string columns only, the size in for all the chars in the string
 
   // nesting information (input/output) for each page
   int num_nesting_levels;
@@ -240,6 +243,28 @@ struct ColumnChunkDesc {
 
   int32_t src_col_index;   // my input column index
   int32_t src_col_schema;  // my schema index in the file
+};
+
+// TODO: rename?
+struct file_intermediate_data {
+  std::vector<std::unique_ptr<datasource::buffer>> raw_page_data;
+  rmm::device_buffer decomp_page_data;
+  hostdevice_vector<gpu::ColumnChunkDesc> chunks{};
+  hostdevice_vector<gpu::PageInfo> pages_info{};
+  hostdevice_vector<gpu::PageNestingInfo> page_nesting_info{};
+  bool has_data{false};
+};
+
+// TODO: rename?
+struct chunk_intermediate_data {
+  rmm::device_uvector<int32_t> page_keys{0, rmm::cuda_stream_default};
+  rmm::device_uvector<int32_t> page_index{0, rmm::cuda_stream_default};
+  rmm::device_uvector<string_index_pair> str_dict_index{0, rmm::cuda_stream_default};
+};
+
+struct chunk_read_info {
+  size_t skip_rows;
+  size_t num_rows;
 };
 
 /**
@@ -411,6 +436,14 @@ void BuildStringDictionaryIndex(ColumnChunkDesc* chunks,
                                 int32_t num_chunks,
                                 rmm::cuda_stream_view stream);
 
+void ComputePageSizes(hostdevice_vector<PageInfo>& pages,
+                      hostdevice_vector<ColumnChunkDesc> const& chunks,
+                      size_t num_rows,
+                      size_t min_row,
+                      bool trim_pass,
+                      bool compute_string_sizes,
+                      rmm::cuda_stream_view stream);
+
 /**
  * @brief Preprocess column information for nested schemas.
  *
@@ -432,6 +465,7 @@ void BuildStringDictionaryIndex(ColumnChunkDesc* chunks,
  * bounds
  * @param stream Cuda stream
  */
+/*
 void PreprocessColumnData(hostdevice_vector<PageInfo>& pages,
                           hostdevice_vector<ColumnChunkDesc> const& chunks,
                           std::vector<input_column_info>& input_columns,
@@ -440,7 +474,7 @@ void PreprocessColumnData(hostdevice_vector<PageInfo>& pages,
                           size_t min_row,
                           bool uses_custom_row_bounds,
                           rmm::cuda_stream_view stream,
-                          rmm::mr::device_memory_resource* mr);
+                          rmm::mr::device_memory_resource* mr);*/
 
 /**
  * @brief Launches kernel for reading the column data stored in the pages

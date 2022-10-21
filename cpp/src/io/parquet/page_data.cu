@@ -18,15 +18,19 @@
 #include <io/utilities/block_utils.cuh>
 #include <io/utilities/column_buffer.hpp>
 
+#include <cudf/detail/iterator.cuh>
 #include <cudf/detail/utilities/assert.cuh>
 #include <cudf/detail/utilities/hash_functions.cuh>
+#include <cudf/detail/utilities/integer_utils.hpp>
 #include <cudf/strings/string_view.hpp>
 #include <cudf/utilities/bit.hpp>
 
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/exec_policy.hpp>
 
+#include <thrust/binary_search.h>
 #include <thrust/functional.h>
+#include <thrust/iterator/discard_iterator.h>
 #include <thrust/iterator/iterator_categories.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/transform_output_iterator.h>
@@ -456,14 +460,8 @@ __device__ void gpuInitStringDescriptors(volatile page_state_s* s, int target_po
   }
 }
 
-/**
- * @brief Output a string descriptor
- *
- * @param[in,out] s Page state input/output
- * @param[in] src_pos Source position
- * @param[in] dstv Pointer to row output data (string descriptor or 32-bit hash)
- */
-inline __device__ void gpuOutputString(volatile page_state_s* s, int src_pos, void* dstv)
+inline __device__ std::pair<const char*, size_t> gpuGetStringData(volatile page_state_s* s,
+                                                                  int src_pos)
 {
   const char* ptr = nullptr;
   size_t len      = 0;
@@ -486,6 +484,35 @@ inline __device__ void gpuOutputString(volatile page_state_s* s, int src_pos, vo
       len = s->str_len[src_pos & (non_zero_buffer_size - 1)];
     }
   }
+
+  return {ptr, len};
+}
+
+/**
+ * @brief Get the length of a string
+ *
+ * @param[in,out] s Page state input/output
+ * @param[in] src_pos Source position
+ *
+ * @return The length of the string
+ */
+inline __device__ size_type gpuGetStringSize(volatile page_state_s* s, int src_pos)
+{
+  if (s->dtype_len == 4) { return 4; }
+  auto [_, len] = gpuGetStringData(s, src_pos);
+  return len;
+}
+
+/**
+ * @brief Output a string descriptor
+ *
+ * @param[in,out] s Page state input/output
+ * @param[in] src_pos Source position
+ * @param[in] dstv Pointer to row output data (string descriptor or 32-bit hash)
+ */
+inline __device__ void gpuOutputString(volatile page_state_s* s, int src_pos, void* dstv)
+{
+  auto [ptr, len] = gpuGetStringData(s, src_pos);
   if (s->dtype_len == 4) {
     // Output hash. This hash value is used if the option to convert strings to
     // categoricals is enabled. The seed value is chosen arbitrarily.
@@ -821,7 +848,8 @@ static __device__ bool setupLocalPageInfo(page_state_s* const s,
                                           PageInfo const* p,
                                           device_span<ColumnChunkDesc const> chunks,
                                           size_t min_row,
-                                          size_t num_rows)
+                                          size_t num_rows,
+                                          bool decode_step)
 {
   int t = threadIdx.x;
   int chunk_idx;
@@ -914,17 +942,23 @@ static __device__ bool setupLocalPageInfo(page_state_s* const s,
         s->dtype_len = 8;  // Convert to 64-bit timestamp
       }
 
-      // first row within the page to output
-      if (page_start_row >= min_row) {
-        s->first_row = 0;
-      } else {
-        s->first_row = (int32_t)min(min_row - page_start_row, (size_t)s->page.num_rows);
-      }
-      // # of rows within the page to output
-      s->num_rows = s->page.num_rows;
-      if ((page_start_row + s->first_row) + s->num_rows > min_row + num_rows) {
-        s->num_rows =
-          (int32_t)max((int64_t)(min_row + num_rows - (page_start_row + s->first_row)), INT64_C(0));
+      // NOTE: s->page.num_rows, s->col.chunk_row, s->first_row and s->num_rows will be 
+      // invalid/bogus during first pass of the preprocess step for nested types. this is ok
+      // because we ignore these values in that stage.
+      { 
+        auto const max_row = min_row + num_rows;
+        
+        // if we are totally outside the range of the input, do nothing
+        if((page_start_row > max_row) || (page_start_row + s->page.num_rows < min_row)){
+          s->first_row = 0;
+          s->num_rows = 0;
+        }
+        // otherwise
+        else {
+          s->first_row = page_start_row >= min_row ? 0 : min_row - page_start_row;
+          auto const max_page_rows = s->page.num_rows - s->first_row;
+          s->num_rows = (page_start_row + s->first_row) + max_page_rows <= max_row ? max_page_rows : max_row - (page_start_row + s->first_row);
+        }
       }
 
       // during the decoding step we need to offset the global output buffers
@@ -932,7 +966,11 @@ static __device__ bool setupLocalPageInfo(page_state_s* const s,
       // is responsible for.
       // - for flat schemas, we can do this directly by using row counts
       // - for nested schemas, these offsets are computed during the preprocess step
-      if (s->col.column_data_base != nullptr) {
+      //
+      // NOTE: in a chunked read situation, s->col.column_data_base and s->col.valid_map_base
+      // will be aliased to memory that has been freed when we get here in the non-decode step, so
+      // we cannot check against nullptr.  we'll just check a flag directly.
+      if (decode_step) {
         int max_depth = s->col.max_nesting_depth;
         for (int idx = 0; idx < max_depth; idx++) {
           PageNestingInfo* pni = &s->page.nesting[idx];
@@ -948,6 +986,7 @@ static __device__ bool setupLocalPageInfo(page_state_s* const s,
           }
 
           pni->data_out = static_cast<uint8_t*>(s->col.column_data_base[idx]);
+
           if (pni->data_out != nullptr) {
             // anything below max depth with a valid data pointer must be a list, so the
             // element size is the size of the offset type.
@@ -1024,6 +1063,7 @@ static __device__ bool setupLocalPageInfo(page_state_s* const s,
       s->page.skipped_leaf_values = 0;
       s->input_value_count        = 0;
       s->input_row_count          = 0;
+      s->input_leaf_count         = 0;
 
       s->row_index_lower_bound = -1;
     }
@@ -1052,13 +1092,13 @@ static __device__ bool setupLocalPageInfo(page_state_s* const s,
 
       // if we're in the decoding step, jump directly to the first
       // value we care about
-      if (s->col.column_data_base != nullptr) {
+      if (decode_step) {
         s->input_value_count = s->page.skipped_values > -1 ? s->page.skipped_values : 0;
       } else {
         s->input_value_count        = 0;
         s->input_leaf_count         = 0;
-        s->page.skipped_values      = -1;
-        s->page.skipped_leaf_values = -1;
+        s->page.skipped_values      = -1;   // magic number to indicate it hasn't been set for use inside UpdatePageSizes
+        s->page.skipped_leaf_values = 0;
       }
     }
 
@@ -1379,13 +1419,14 @@ __device__ void gpuDecodeLevels(page_state_s* s, int32_t target_leaf_count, int 
  * @param[in] bounds_set Whether or not s->row_index_lower_bound, s->first_row and s->num_rows
  * have been computed for this page (they will only be set in the second/trim pass).
  */
+template <bool is_string_column>
 static __device__ void gpuUpdatePageSizes(page_state_s* s,
                                           int32_t target_input_value_count,
                                           int t,
                                           bool bounds_set)
 {
   // max nesting depth of the column
-  int max_depth = s->col.max_nesting_depth;
+  int const max_depth = s->col.max_nesting_depth;
   // how many input level values we've processed in the page so far
   int input_value_count = s->input_value_count;
   // how many leaf values we've processed in the page so far
@@ -1399,15 +1440,14 @@ static __device__ void gpuUpdatePageSizes(page_state_s* s,
       start_depth, end_depth, d, s, input_value_count, target_input_value_count, t);
 
     // count rows and leaf values
-    int is_new_row                = start_depth == 0 ? 1 : 0;
-    uint32_t warp_row_count_mask  = ballot(is_new_row);
-    int is_new_leaf               = (d >= s->page.nesting[max_depth - 1].max_def_level) ? 1 : 0;
-    uint32_t warp_leaf_count_mask = ballot(is_new_leaf);
-
+    int const is_new_row               = start_depth == 0 ? 1 : 0;
+    uint32_t const warp_row_count_mask = ballot(is_new_row);
+    int const is_new_leaf = (d >= s->page.nesting[max_depth - 1].max_def_level) ? 1 : 0;
+    uint32_t const warp_leaf_count_mask = ballot(is_new_leaf);
     // is this thread within row bounds? on the first pass we don't know the bounds, so we will be
     // computing the full size of the column.  on the second pass, we will know our actual row
     // bounds, so the computation will cap sizes properly.
-    int in_row_bounds = 1;
+    int in_row_bounds                = 1;
     if (bounds_set) {
       // absolute row index
       int32_t thread_row_index =
@@ -1417,8 +1457,8 @@ static __device__ void gpuUpdatePageSizes(page_state_s* s,
                         ? 1
                         : 0;
 
-      uint32_t row_bounds_mask  = ballot(in_row_bounds);
-      int first_thread_in_range = __ffs(row_bounds_mask) - 1;
+      uint32_t const row_bounds_mask  = ballot(in_row_bounds);
+      int const first_thread_in_range = __ffs(row_bounds_mask) - 1;
 
       // if we've found the beginning of the first row, mark down the position
       // in the def/repetition buffer (skipped_values) and the data buffer (skipped_leaf_values)
@@ -1434,10 +1474,36 @@ static __device__ void gpuUpdatePageSizes(page_state_s* s,
     // increment counts across all nesting depths
     for (int s_idx = 0; s_idx < max_depth; s_idx++) {
       // if we are within the range of nesting levels we should be adding value indices for
-      int in_nesting_bounds = (s_idx >= start_depth && s_idx <= end_depth && in_row_bounds) ? 1 : 0;
+      int const in_nesting_bounds =
+        (s_idx >= start_depth && s_idx <= end_depth && in_row_bounds) ? 1 : 0;
+      uint32_t const count_mask = ballot(in_nesting_bounds);
+      if (!t) {
+        s->page.nesting[s_idx].size += __popc(count_mask);
+      }
 
-      uint32_t count_mask = ballot(in_nesting_bounds);
-      if (!t) { s->page.nesting[s_idx].size += __popc(count_mask); }
+      // string lengths, if applicable
+      if constexpr (is_string_column) {
+        if (s_idx == max_depth - 1) {
+          // string len for each thread
+          size_type const str_len = [&]() {
+            if (is_new_leaf) {
+              int const src_pos  = input_leaf_count + __popc(warp_leaf_count_mask & ((1 << t) - 1));
+              auto const str_len = gpuGetStringSize(s, src_pos);
+              return str_len;
+            }
+            return 0;
+          }();
+
+          // sum sizes from all threads.
+          using warp_reduce = cub::WarpReduce<uint32_t>;
+          __shared__ typename warp_reduce::TempStorage temp_storage[1];
+          size_type warp_total_str_len = warp_reduce(temp_storage[0]).Sum(str_len);
+          if (!t) {
+            s->page.str_bytes += warp_total_str_len;
+            // printf("STR BYTES: %d\n", s->page.str_bytes);
+          }
+        }
+      }
     }
 
     input_value_count += min(32, (target_input_value_count - input_value_count));
@@ -1471,21 +1537,35 @@ __global__ void __launch_bounds__(block_size)
                       device_span<ColumnChunkDesc const> chunks,
                       size_t min_row,
                       size_t num_rows,
-                      bool trim_pass)
+                      bool compute_num_rows_pass,
+                      bool compute_string_sizes)
 {
   __shared__ __align__(16) page_state_s state_g;
 
   page_state_s* const s = &state_g;
-  int page_idx          = blockIdx.x;
+  int  page_idx         = blockIdx.x;
   int t                 = threadIdx.x;
   PageInfo* pp          = &pages[page_idx];
 
+  if (!setupLocalPageInfo(s, pp, chunks, min_row, num_rows, false)) {
+    return;
+  }
+
   // we only need to preprocess hierarchies with repetition in them (ie, hierarchies
   // containing lists anywhere within).
-  bool const has_repetition = chunks[pp->chunk_idx].max_level[level_type::REPETITION] > 0;
-  if (!has_repetition) { return; }
+  bool const has_repetition   = chunks[pp->chunk_idx].max_level[level_type::REPETITION] > 0;
+  compute_string_sizes = compute_string_sizes && ((s->col.data_type & 7) == BYTE_ARRAY && s->dtype_len != 4);  
 
-  if (!setupLocalPageInfo(s, pp, chunks, trim_pass ? min_row : 0, trim_pass ? num_rows : INT_MAX)) {
+  // if this is a flat hierarchy (no lists) and is not a string column, compute the size directly
+  // from the number of values.
+  if (!has_repetition && !compute_string_sizes) {
+    if (!t) {
+      // note: doing this for all nesting level because we can still have structs even if we don't
+      // have lists.
+      for (size_type idx = 0; idx < pp->num_nesting_levels; idx++) {
+        pp->nesting[idx].size = pp->num_input_values;
+      }
+    }
     return;
   }
 
@@ -1497,12 +1577,13 @@ __global__ void __launch_bounds__(block_size)
   }
   if (!t) {
     s->page.skipped_values      = -1;
-    s->page.skipped_leaf_values = -1;
+    s->page.skipped_leaf_values = 0;
+    s->page.str_bytes           = 0;
     s->input_row_count          = 0;
     s->input_value_count        = 0;
 
-    // if this isn't the trim pass, make sure we visit absolutely everything
-    if (!trim_pass) {
+    // if we're computing the number of rows, make sure we visit absolutely everything
+    if (compute_num_rows_pass) {
       s->first_row             = 0;
       s->num_rows              = INT_MAX;
       s->row_index_lower_bound = -1;
@@ -1520,25 +1601,47 @@ __global__ void __launch_bounds__(block_size)
     while (!s->error && s->input_value_count < s->num_input_values) {
       // decode repetition and definition levels. these will attempt to decode at
       // least up to the target, but may decode a few more.
-      gpuDecodeStream(s->rep, s, target_input_count, t, level_type::REPETITION);
+      if (has_repetition) {
+        gpuDecodeStream(s->rep, s, target_input_count, t, level_type::REPETITION);
+      }
       gpuDecodeStream(s->def, s, target_input_count, t, level_type::DEFINITION);
       __syncwarp();
 
       // we may have decoded different amounts from each stream, so only process what we've been
-      int actual_input_count =
-        min(s->lvl_count[level_type::REPETITION], s->lvl_count[level_type::DEFINITION]);
+      int actual_input_count = has_repetition ? min(s->lvl_count[level_type::REPETITION],
+                                                    s->lvl_count[level_type::DEFINITION])
+                                              : s->lvl_count[level_type::DEFINITION];
+      actual_input_count     = min(actual_input_count, s->num_input_values);
 
       // process what we got back
-      gpuUpdatePageSizes(s, actual_input_count, t, trim_pass);
-      target_input_count = actual_input_count + batch_size;
+      if (compute_string_sizes) {
+        auto src_target_pos = target_input_count;
+        // TODO: compute this in another warp like the decode step does
+        if (s->dict_base) {
+          src_target_pos = gpuDecodeDictionaryIndices(s, src_target_pos, t);
+        } else if ((s->col.data_type & 7) == BYTE_ARRAY) {
+          gpuInitStringDescriptors(s, src_target_pos, t);
+        }
+        if (!t) { *(volatile int32_t*)&s->dict_pos = src_target_pos; }
+
+        gpuUpdatePageSizes<true>(s, actual_input_count, t, !compute_num_rows_pass);
+      } else {
+        gpuUpdatePageSizes<false>(s, actual_input_count, t, !compute_num_rows_pass);
+      }
+
+      // target_input_count = actual_input_count + batch_size;
+      target_input_count += batch_size;
       __syncwarp();
     }
   }
   // update # rows in the actual page
   if (!t) {
-    pp->num_rows            = s->page.nesting[0].size;
+    if(compute_num_rows_pass){
+      pp->num_rows           = s->page.nesting[0].size;
+    }
     pp->skipped_values      = s->page.skipped_values;
     pp->skipped_leaf_values = s->page.skipped_leaf_values;
+    pp->str_bytes           = s->page.str_bytes;
   }
 }
 
@@ -1565,7 +1668,7 @@ __global__ void __launch_bounds__(block_size) gpuDecodePageData(
   int t                 = threadIdx.x;
   int out_thread0;
 
-  if (!setupLocalPageInfo(s, &pages[page_idx], chunks, min_row, num_rows)) { return; }
+  if (!setupLocalPageInfo(s, &pages[page_idx], chunks, min_row, num_rows, true)) { return; }
 
   if (s->dict_base) {
     out_thread0 = (s->dict_bits > 0) ? 64 : 32;
@@ -1684,71 +1787,13 @@ __global__ void __launch_bounds__(block_size) gpuDecodePageData(
   }
 }
 
-struct chunk_row_output_iter {
-  PageInfo* p;
-  using value_type        = size_type;
-  using difference_type   = size_type;
-  using pointer           = size_type*;
-  using reference         = size_type&;
-  using iterator_category = thrust::output_device_iterator_tag;
-
-  __host__ __device__ chunk_row_output_iter operator+(int i)
-  {
-    return chunk_row_output_iter{p + i};
-  }
-
-  __host__ __device__ void operator++() { p++; }
-
-  __device__ reference operator[](int i) { return p[i].chunk_row; }
-  __device__ reference operator*() { return p->chunk_row; }
-  __device__ void operator=(value_type v) { p->chunk_row = v; }
-};
-
-struct start_offset_output_iterator {
-  PageInfo* pages;
-  int* page_indices;
-  int cur_index;
-  int src_col_schema;
-  int nesting_depth;
-  int empty               = 0;
-  using value_type        = size_type;
-  using difference_type   = size_type;
-  using pointer           = size_type*;
-  using reference         = size_type&;
-  using iterator_category = thrust::output_device_iterator_tag;
-
-  __host__ __device__ start_offset_output_iterator operator+(int i)
-  {
-    return start_offset_output_iterator{
-      pages, page_indices, cur_index + i, src_col_schema, nesting_depth};
-  }
-
-  __host__ __device__ void operator++() { cur_index++; }
-
-  __device__ reference operator[](int i) { return dereference(cur_index + i); }
-  __device__ reference operator*() { return dereference(cur_index); }
-
- private:
-  __device__ reference dereference(int index)
-  {
-    PageInfo const& p = pages[page_indices[index]];
-    if (p.src_col_schema != src_col_schema || p.flags & PAGEINFO_FLAGS_DICTIONARY) { return empty; }
-    return p.nesting[nesting_depth].page_start_value;
-  }
-};
-
-/**
- * @copydoc cudf::io::parquet::gpu::PreprocessColumnData
- */
-void PreprocessColumnData(hostdevice_vector<PageInfo>& pages,
-                          hostdevice_vector<ColumnChunkDesc> const& chunks,
-                          std::vector<input_column_info>& input_columns,
-                          std::vector<cudf::io::detail::column_buffer>& output_columns,
-                          size_t num_rows,
-                          size_t min_row,
-                          bool uses_custom_row_bounds,
-                          rmm::cuda_stream_view stream,
-                          rmm::mr::device_memory_resource* mr)
+void ComputePageSizes(hostdevice_vector<PageInfo>& pages,
+                      hostdevice_vector<ColumnChunkDesc> const& chunks,
+                      size_t min_row,
+                      size_t num_rows,
+                      bool trim_pass,
+                      bool compute_string_sizes,
+                      rmm::cuda_stream_view stream)
 {
   dim3 dim_block(block_size, 1);
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
@@ -1759,124 +1804,7 @@ void PreprocessColumnData(hostdevice_vector<PageInfo>& pages,
   // If uses_custom_row_bounds is set to true, we have to do a second pass later that "trims"
   // the starting and ending read values to account for these bounds.
   gpuComputePageSizes<<<dim_grid, dim_block, 0, stream.value()>>>(
-    pages.device_ptr(),
-    chunks,
-    // if uses_custom_row_bounds is false, include all possible rows.
-    uses_custom_row_bounds ? min_row : 0,
-    uses_custom_row_bounds ? num_rows : INT_MAX,
-    !uses_custom_row_bounds);
-
-  // computes:
-  // PageInfo::chunk_row for all pages
-  // Note: this is doing some redundant work for pages in flat hierarchies.  chunk_row has already
-  // been computed during header decoding. the overall amount of work here is very small though.
-  auto key_input = thrust::make_transform_iterator(
-    pages.device_ptr(), [] __device__(PageInfo const& page) { return page.chunk_idx; });
-  auto page_input = thrust::make_transform_iterator(
-    pages.device_ptr(), [] __device__(PageInfo const& page) { return page.num_rows; });
-  thrust::exclusive_scan_by_key(rmm::exec_policy(stream),
-                                key_input,
-                                key_input + pages.size(),
-                                page_input,
-                                chunk_row_output_iter{pages.device_ptr()});
-
-  // computes:
-  // PageNestingInfo::size for each level of nesting, for each page, taking row bounds into account.
-  // PageInfo::skipped_values, which tells us where to start decoding in the input  .
-  // It is only necessary to do this second pass if uses_custom_row_bounds is set (if the user has
-  // specified artifical bounds).
-  if (uses_custom_row_bounds) {
-    gpuComputePageSizes<<<dim_grid, dim_block, 0, stream.value()>>>(
-      pages.device_ptr(), chunks, min_row, num_rows, true);
-  }
-
-  // ordering of pages is by input column schema, repeated across row groups.  so
-  // if we had 3 columns, each with 2 pages, and 1 row group, our schema values might look like
-  //
-  // 1, 1, 2, 2, 3, 3
-  //
-  // However, if we had more than one row group, the pattern would be
-  //
-  // 1, 1, 2, 2, 3, 3, 1, 1, 2, 2, 3, 3
-  // ^ row group 0     |
-  //                   ^ row group 1
-  //
-  // To use exclusive_scan_by_key, the ordering we actually want is
-  //
-  // 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3
-  //
-  // We also need to preserve key-relative page ordering, so we need to use a stable sort.
-  rmm::device_uvector<int> page_keys(pages.size(), stream);
-  rmm::device_uvector<int> page_index(pages.size(), stream);
-  {
-    thrust::transform(rmm::exec_policy(stream),
-                      pages.device_ptr(),
-                      pages.device_ptr() + pages.size(),
-                      page_keys.begin(),
-                      [] __device__(PageInfo const& page) { return page.src_col_schema; });
-
-    thrust::sequence(rmm::exec_policy(stream), page_index.begin(), page_index.end());
-    thrust::stable_sort_by_key(rmm::exec_policy(stream),
-                               page_keys.begin(),
-                               page_keys.end(),
-                               page_index.begin(),
-                               thrust::less<int>());
-  }
-
-  // compute output column sizes by examining the pages of the -input- columns
-  for (size_t idx = 0; idx < input_columns.size(); idx++) {
-    auto const& input_col = input_columns[idx];
-    auto src_col_schema   = input_col.schema_idx;
-    size_t max_depth      = input_col.nesting_depth();
-
-    auto* cols = &output_columns;
-    for (size_t l_idx = 0; l_idx < input_col.nesting_depth(); l_idx++) {
-      auto& out_buf = (*cols)[input_col.nesting[l_idx]];
-      cols          = &out_buf.children;
-
-      // size iterator. indexes pages by sorted order
-      auto size_input = thrust::make_transform_iterator(
-        page_index.begin(),
-        [src_col_schema, l_idx, pages = pages.device_ptr()] __device__(int index) {
-          auto const& page = pages[index];
-          if (page.src_col_schema != src_col_schema || page.flags & PAGEINFO_FLAGS_DICTIONARY) {
-            return 0;
-          }
-          return page.nesting[l_idx].size;
-        });
-
-      // if this buffer is part of a list hierarchy, we need to determine it's
-      // final size and allocate it here.
-      //
-      // for struct columns, higher levels of the output columns are shared between input
-      // columns. so don't compute any given level more than once.
-      if ((out_buf.user_data & PARQUET_COLUMN_BUFFER_FLAG_HAS_LIST_PARENT) && out_buf.size == 0) {
-        int size = thrust::reduce(rmm::exec_policy(stream), size_input, size_input + pages.size());
-
-        // if this is a list column add 1 for non-leaf levels for the terminating offset
-        if (out_buf.type.id() == type_id::LIST && l_idx < max_depth) { size++; }
-
-        // allocate
-        out_buf.create(size, stream, mr);
-      }
-
-      // for nested hierarchies, compute per-page start offset
-      if (input_col.has_repetition) {
-        thrust::exclusive_scan_by_key(rmm::exec_policy(stream),
-                                      page_keys.begin(),
-                                      page_keys.end(),
-                                      size_input,
-                                      start_offset_output_iterator{pages.device_ptr(),
-                                                                   page_index.begin(),
-                                                                   0,
-                                                                   static_cast<int>(src_col_schema),
-                                                                   static_cast<int>(l_idx)});
-      }
-    }
-  }
-
-  // retrieve pages back
-  pages.device_to_host(stream);
+    pages.device_ptr(), chunks, min_row, num_rows, trim_pass, compute_string_sizes);
 }
 
 /**

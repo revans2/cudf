@@ -82,8 +82,58 @@ class reader::impl {
                            bool uses_custom_row_bounds,
                            std::vector<std::vector<size_type>> const& row_group_indices);
 
- private:
   /**
+   * TODO
+   *
+   * @brief read_chunk
+   * @param chunk_info
+   * @return
+   */
+  table_with_metadata read_chunk();
+
+  /**
+   * TODO
+   *
+   * @brief read_completed
+   * @return
+   */
+  bool has_next();
+
+ private:
+  // TODO
+  void preprocess_file_and_columns(size_type skip_rows,
+                                   size_type num_rows,
+                                   bool uses_custom_row_bounds,
+                                   const std::vector<std::vector<size_type>>& row_group_list);
+
+  // TODO
+  table_with_metadata read_chunk_internal(bool uses_custom_row_bounds);
+
+  /**
+   * TODO
+   *
+   * @brief load_column_chunk_descriotions
+   * @return
+   */
+  std::pair<size_type, size_type> preprocess_file(
+    size_type skip_rows,
+    size_type num_rows,
+    std::vector<std::vector<size_type>> const& row_group_list);
+
+  /**
+   * TODO
+   *
+   * @brief make_output
+   * @param out_metadata
+   * @param out_columns
+   * @return
+   */
+  table_with_metadata finalize_output(table_metadata& out_metadata,
+                                      std::vector<std::unique_ptr<column>>& out_columns);
+
+  /**
+   * TODO: Rename this into something more meaningful
+   *
    * @brief Reads compressed page data to device memory
    *
    * @param page_data Buffers to hold compressed page data for each chunk
@@ -150,6 +200,8 @@ class reader::impl {
   /**
    * @brief Preprocess column information and allocate output buffers.
    *
+   * TODO
+   *
    * There are several pieces of information we can't compute directly from row counts in
    * the parquet headers when dealing with nested schemas.
    * - The total sizes of all output columns at all nesting levels
@@ -169,7 +221,25 @@ class reader::impl {
                           hostdevice_vector<gpu::PageInfo>& pages,
                           size_t min_row,
                           size_t total_rows,
-                          bool uses_custom_row_bounds);
+                          bool uses_custom_row_bounds,
+                          size_type chunked_read_size);
+
+  /**
+   * TODO
+   * @brief allocate_columns
+   * @param chunks
+   * @param pages
+   * @param id
+   * @param min_row
+   * @param total_rows
+   * @param uses_custom_row_bounds
+   */
+  void allocate_columns(hostdevice_vector<gpu::ColumnChunkDesc>& chunks,
+                        hostdevice_vector<gpu::PageInfo>& pages,
+                        gpu::chunk_intermediate_data const& id,
+                        size_t min_row,
+                        size_t total_rows,
+                        bool uses_custom_row_bounds);
 
   /**
    * @brief Converts the page data and outputs to columns.
@@ -203,6 +273,17 @@ class reader::impl {
   bool _strings_to_categorical = false;
   std::optional<std::vector<reader_column_schema>> _reader_column_schema;
   data_type _timestamp_type{type_id::EMPTY};
+
+  // Variables used for chunked reading:
+  cudf::io::parquet::gpu::file_intermediate_data _file_itm_data;
+  cudf::io::parquet::gpu::chunk_intermediate_data _chunk_itm_data;
+  std::vector<cudf::io::parquet::gpu::chunk_read_info> _chunk_read_info;
+  std::size_t _chunk_read_limit{0};
+  std::size_t _current_read_chunk{0};
+  bool _file_preprocessed{false};
+
+  // TODO: Remove below
+  parquet_reader_options const _options;
 };
 
 }  // namespace parquet
