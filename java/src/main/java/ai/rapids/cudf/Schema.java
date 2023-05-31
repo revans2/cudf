@@ -76,14 +76,7 @@ public class Schema {
   }
 
   DType[] getTypes() {
-    if (types == null) {
-      return null;
-    }
-    DType[] ret = new DType[types.size()];
-    for (int i = 0; i < types.size(); i++) {
-      ret[i] = types.get(i);
-    }
-    return ret;
+    return types == null ? null : types.toArray(new DType[types.size()]);
   }
 
   public static class Builder {

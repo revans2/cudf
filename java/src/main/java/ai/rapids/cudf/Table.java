@@ -237,9 +237,9 @@ public final class Table implements AutoCloseable {
    * read JSON data and return a pointer to a TableWithMeta object.
    */
   private static native long readJSON(String[] columnNames,
-                                        int[] dTypeIds, int[] dTypeScales,
-                                        String filePath, long address, long length,
-                                        boolean dayFirst, boolean lines) throws CudfException;
+                                      int[] dTypeIds, int[] dTypeScales,
+                                      String filePath, long address, long length,
+                                      boolean dayFirst, boolean lines) throws CudfException;
 
   private static native long readAndInferJSON(long address, long length,
       boolean dayFirst, boolean lines) throws CudfException;
@@ -971,6 +971,16 @@ public final class Table implements AutoCloseable {
     return readJSON(schema, opts, buffer, 0, buffer.length);
   }
 
+  /**
+   * This handles doing the heavy lifting to make sure that is returned matches the order
+   * of the columns requested in schema. It will insert null columns if needed and reorder
+   * columns based off of the names of the columns.  Not that this is likely going to have
+   * to change when we support nested types for JSON data.
+   * @param schema what we want returned
+   * @param twm the table with metadata about what columns were returned. Note that twm is modified
+   *            and the table stored in it is released as a part of this.
+   * @return an updated table with the columns in the order we want.
+   */
   private static Table gatherJSONColumns(Schema schema, TableWithMeta twm) {
     String[] neededColumns = schema.getColumnNames();
     if (neededColumns == null || neededColumns.length == 0) {
