@@ -246,7 +246,8 @@ public final class Table implements AutoCloseable {
   /**
    * read JSON data and return a pointer to a TableWithMeta object.
    */
-  private static native long readJSON(int[] numChildren, String[] columnNames,
+  private static native long readJSON(boolean isListTop,
+                                        int[] numChildren, String[] columnNames,
                                         int[] dTypeIds, int[] dTypeScales,
                                         String filePath, long address, long length,
                                         boolean dayFirst, boolean lines,
@@ -262,7 +263,8 @@ public final class Table implements AutoCloseable {
                                         boolean experimental,
                                         byte lineDelimiter) throws CudfException;
 
-  private static native long readJSONFromDataSource(int[] numChildren, String[] columnNames,
+  private static native long readJSONFromDataSource(boolean isListTop,
+                                      int[] numChildren, String[] columnNames,
                                       int[] dTypeIds, int[] dTypeScales,
                                       boolean dayFirst, boolean lines,
                                       boolean recoverWithNulls,
@@ -1099,7 +1101,8 @@ public final class Table implements AutoCloseable {
    */
   public static Table readJSON(Schema schema, JSONOptions opts, File path) {
     try (TableWithMeta twm = new TableWithMeta(
-            readJSON(schema.getFlattenedNumChildren(), schema.getFlattenedColumnNames(),
+            readJSON(schema.getType() == DType.LIST,
+                    schema.getFlattenedNumChildren(), schema.getFlattenedColumnNames(),
                     schema.getFlattenedTypeIds(), schema.getFlattenedTypeScales(),
                     path.getAbsolutePath(),
                     0, 0,
@@ -1272,6 +1275,7 @@ public final class Table implements AutoCloseable {
     assert len <= buffer.length - offset;
     assert offset >= 0 && offset < buffer.length;
     try (TableWithMeta twm = new TableWithMeta(readJSON(
+            schema.getType() == DType.LIST,
             schema.getFlattenedNumChildren(), schema.getFlattenedColumnNames(),
             schema.getFlattenedTypeIds(), schema.getFlattenedTypeScales(), null,
             buffer.getAddress() + offset, len,
@@ -1318,7 +1322,8 @@ public final class Table implements AutoCloseable {
   @SuppressWarnings("unused")
   public static Table readJSON(Schema schema, JSONOptions opts, DataSource ds, int emptyRowCount) {
     long dsHandle = DataSourceHelper.createWrapperDataSource(ds);
-    try (TableWithMeta twm = new TableWithMeta(readJSONFromDataSource(schema.getFlattenedNumChildren(),
+    try (TableWithMeta twm = new TableWithMeta(readJSONFromDataSource(schema.getType() == DType.LIST,
+        schema.getFlattenedNumChildren(),
         schema.getFlattenedColumnNames(), schema.getFlattenedTypeIds(), schema.getFlattenedTypeScales(),
         opts.isDayFirst(),
         opts.isLines(),

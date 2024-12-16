@@ -65,6 +65,27 @@
 namespace cudf {
 namespace jni {
 
+void debug_schema(std::string const & name, cudf::io::schema_element const & elem, int depth = 0) {
+  for (int i = 0; i < depth; i++) {
+    std::cerr << "\t";
+  }
+  std::cerr << "CUDF-" << name << " " <<
+    (elem.type.id() == cudf::type_id::LIST ? "LIST" :
+    (elem.type.id() == cudf::type_id::STRUCT ? "STRUCT" : "STRING")) << std::endl;
+
+  if (elem.column_order) {
+    for (auto it = elem.column_order->begin(); it != elem.column_order->end(); it++) {
+      for (int i = 0; i < depth + 1; i++) {
+        std::cerr << "*\t";
+      }
+      std::cerr << *it << std::endl;
+    }
+  }
+  for (auto it = elem.child_types.begin(); it != elem.child_types.end(); it++) {
+    debug_schema(it->first, it->second, depth + 1);
+  }
+}
+
 /**
  * @brief The base class for table writer.
  *
@@ -1811,6 +1832,7 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_TableWithMeta_releaseTable(JNIE
 JNIEXPORT jlong JNICALL
 Java_ai_rapids_cudf_Table_readJSONFromDataSource(JNIEnv* env,
                                                  jclass,
+                                                 jboolean is_list_top,
                                                  jintArray j_num_children,
                                                  jobjectArray col_names,
                                                  jintArray j_types,
@@ -1896,10 +1918,20 @@ Java_ai_rapids_cudf_Table_readJSONFromDataSource(JNIEnv* env,
         name_order.push_back(name);
       }
       auto const prune_columns = data_types.size() != 0;
-      cudf::io::schema_element structs{
-        cudf::data_type{cudf::type_id::STRUCT}, std::move(data_types), {std::move(name_order)}};
-      opts.prune_columns(prune_columns).dtypes(structs);
 
+      std::cerr << "CUDF-PRUNE " << prune_columns << std::endl;
+      if (is_list_top) {
+        // TODO verify that there is exactly 1 child
+        cudf::io::schema_element list{
+          cudf::data_type{cudf::type_id::LIST}, std::move(data_types), {std::move(name_order)}};
+        cudf::jni::debug_schema("TOP", list);
+        opts.prune_columns(prune_columns).dtypes(list);
+      } else {
+        cudf::io::schema_element structs{
+          cudf::data_type{cudf::type_id::STRUCT}, std::move(data_types), {std::move(name_order)}};
+        cudf::jni::debug_schema("TOP", structs);
+        opts.prune_columns(prune_columns).dtypes(structs);
+      }
     } else {
       // should infer the types
     }
@@ -1914,6 +1946,7 @@ Java_ai_rapids_cudf_Table_readJSONFromDataSource(JNIEnv* env,
 
 JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_Table_readJSON(JNIEnv* env,
                                                            jclass,
+                                                           jboolean is_list_top,
                                                            jintArray j_num_children,
                                                            jobjectArray col_names,
                                                            jintArray j_types,
@@ -2017,9 +2050,20 @@ JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_Table_readJSON(JNIEnv* env,
         name_order.emplace_back(std::move(name));
       }
       auto const prune_columns = data_types.size() != 0;
-      cudf::io::schema_element structs{
-        cudf::data_type{cudf::type_id::STRUCT}, std::move(data_types), {std::move(name_order)}};
-      opts.prune_columns(prune_columns).dtypes(structs);
+
+      std::cerr << "CUDF-PRUNE " << prune_columns << std::endl;
+      if (is_list_top) {
+        // TODO verify that there is exactly 1 child
+        cudf::io::schema_element list{
+          cudf::data_type{cudf::type_id::LIST}, std::move(data_types), {std::move(name_order)}};
+        cudf::jni::debug_schema("TOP", list);
+        opts.prune_columns(prune_columns).dtypes(list);
+      } else {
+        cudf::io::schema_element structs{
+          cudf::data_type{cudf::type_id::STRUCT}, std::move(data_types), {std::move(name_order)}};
+        cudf::jni::debug_schema("TOP", structs);
+        opts.prune_columns(prune_columns).dtypes(structs);
+      }
     } else {
       // should infer the types
     }

@@ -180,6 +180,10 @@ public class Schema {
     return new Builder(DType.STRUCT);
   }
 
+  public static Builder listBuilder() {
+    return new Builder(DType.LIST);
+  }
+
   /**
    * Get names of the columns flattened from all levels in schema by depth-first traversal.
    * @return An array containing names of all columns in schema.
